@@ -1,20 +1,20 @@
-name: Feature Branch Owner Notification (Log Only)
+name: Feature Branch Scan (with Owner Info)
 
 on:
   schedule:
-    - cron: "0 3 * * 1"   # Weekly (08:30 AM IST)
+    - cron: "0 3 * * 1"   # Weekly
   workflow_dispatch:
 
 jobs:
-  notify-owners:
-    name: Scan feature branch owners (not merged to release)
+  scan-feature-branches:
+    name: Scan feature branches
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install required tools
+      - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Scan feature branches (log only)
+      - name: Scan feature branches in all repos
         env:
           GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
           ORG_NAME: TechExplorers2025
@@ -24,15 +24,14 @@ jobs:
           set -euo pipefail
 
           echo "=============================================="
-          echo " GitHub Feature Branch Governance Automation"
-          echo " MODE          : LOG ONLY (NO EMAIL)"
+          echo " GitHub Feature Branch Scan (With Owner Info)"
           echo " Org           : $ORG_NAME"
           echo " Release Branch: $RELEASE_BRANCH"
           echo " Started at    : $(date)"
           echo "=============================================="
 
           echo "Fetching repositories from organization..."
-          REPOS=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+          REPOS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100" \
             | jq -r '.[].name')
 
@@ -42,56 +41,72 @@ jobs:
             echo " Repository: $repo"
             echo "------------------------------------------------"
 
-            BRANCHES=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            RELEASE_EXISTS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$ORG_NAME/$repo/branches/$RELEASE_BRANCH")
+
+            if echo "$RELEASE_EXISTS" | jq -e '.name' >/dev/null 2>&1; then
+              echo "   ✅ $RELEASE_BRANCH exists in $repo"
+            else
+              echo "   ⚠️ $RELEASE_BRANCH branch does NOT exist in $repo, skipping comparison"
+              continue
+            fi
+
+            BRANCHES=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/$ORG_NAME/$repo/branches?per_page=100" \
               | jq -r '.[].name')
 
             for branch in $BRANCHES; do
               [[ "$branch" != feature/* ]] && continue
-
               echo ""
-              echo "➡️  Checking feature branch: $branch"
+              echo "➡️  Feature Branch Found: $branch"
 
-              COMPARE=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/repos/$ORG_NAME/$repo/compare/$RELEASE_BRANCH...$branch")
+              COMPARE=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$ORG_NAME/$repo/compare/$RELEASE_BRANCH...$branch" || echo "{}")
 
-              STATUS=$(echo "$COMPARE" | jq -r '.status // empty')
+              STATUS=$(echo "$COMPARE" | jq -r '.status // "unknown"')
 
-              if [[ "$STATUS" == "identical" ]]; then
-                echo "   ✅ Already merged to $RELEASE_BRANCH"
+              if [[ "$STATUS" == "unknown" ]]; then
+                echo "    ⚠️ Cannot determine merge status"
                 continue
               fi
 
-              echo "   ❌ NOT merged to $RELEASE_BRANCH (status: $STATUS)"
+              if [[ "$STATUS" == "identical" ]]; then
+                echo "    ✅ Already merged into $RELEASE_BRANCH"
+                continue
+              fi
 
-              # Get latest commit SHA
-              SHA=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+              echo "    ❌ Not merged into $RELEASE_BRANCH (status: $STATUS)"
+
+              # ===============================
+              # Last Commit Owner Information
+              # ===============================
+
+              SHA=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$ORG_NAME/$repo/branches/$branch" \
                 | jq -r '.commit.sha')
 
-              # Get commit details
-              COMMIT=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+              COMMIT=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$ORG_NAME/$repo/commits/$SHA")
 
-              OWNER_NAME=$(echo "$COMMIT" | jq -r '.commit.author.name // "Developer"')
-              OWNER_EMAIL=$(echo "$COMMIT" | jq -r '.commit.author.email // empty')
-              OWNER_LOGIN=$(echo "$COMMIT" | jq -r '.author.login // empty')
-              COMMIT_DATE=$(echo "$COMMIT" | jq -r '.commit.author.date // empty')
+              OWNER_NAME=$(echo "$COMMIT" | jq -r '.commit.author.name // "Unknown"')
+              OWNER_EMAIL=$(echo "$COMMIT" | jq -r '.commit.author.email // "Not available"')
+              OWNER_LOGIN=$(echo "$COMMIT" | jq -r '.author.login // "Not linked"')
+              COMMIT_DATE=$(echo "$COMMIT" | jq -r '.commit.author.date // "Unknown"')
               COMMIT_MESSAGE=$(echo "$COMMIT" | jq -r '.commit.message | split("\n")[0]')
 
-              echo "   🔎 Last Commit Details:"
-              echo "      🔑 Commit SHA     : $SHA"
-              echo "      🗓️  Commit Date    : $COMMIT_DATE"
-              echo "      👤 Author Name    : $OWNER_NAME"
-              echo "      📧 Author Email   : $OWNER_EMAIL"
-              echo "      🧑 GitHub Login   : $OWNER_LOGIN"
-              echo "      📝 Commit Message : $COMMIT_MESSAGE"
+              echo "    🔎 Last Commit Details:"
+              echo "       🔑 Commit SHA     : $SHA"
+              echo "       🗓️  Commit Date    : $COMMIT_DATE"
+              echo "       👤 Author Name    : $OWNER_NAME"
+              echo "       📧 Author Email   : $OWNER_EMAIL"
+              echo "       🧑 GitHub Login   : $OWNER_LOGIN"
+              echo "       📝 Commit Message : $COMMIT_MESSAGE"
 
             done
           done
 
           echo ""
           echo "=============================================="
-          echo " Feature Branch Scan Completed (LOG ONLY)"
+          echo " Feature Branch Scan Completed"
           echo " Finished at : $(date)"
           echo "=============================================="
