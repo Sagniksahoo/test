@@ -1,4 +1,4 @@
-name: Feature Branch Scan
+name: Feature Branch Scan (Org-wide, Any Release/*)
 
 on:
   schedule:
@@ -18,19 +18,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
           ORG_NAME: TechExplorers2025
-          RELEASE_BRANCH: release
         shell: bash
         run: |
           set -euo pipefail
 
           echo "=============================================="
-          echo " GitHub Feature Branch Scan"
-          echo " Org           : $ORG_NAME"
-          echo " Release Branch: $RELEASE_BRANCH"
-          echo " Started at    : $(date)"
+          echo " GitHub Feature Branch Scan (Org-wide)"
+          echo " Org : $ORG_NAME"
+          echo " Started at : $(date)"
           echo "=============================================="
 
-          # Fetch repositories
           echo "Fetching repositories from organization..."
           REPOS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100" \
@@ -38,45 +35,74 @@ jobs:
 
           for repo in $REPOS; do
             echo ""
-            echo "------------------------------------------------"
+            echo "================================================"
             echo " Repository: $repo"
-            echo "------------------------------------------------"
+            echo "================================================"
 
-            # Check if release branch exists safely (no -f)
-            RELEASE_EXISTS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$ORG_NAME/$repo/branches/$RELEASE_BRANCH")
-
-            if echo "$RELEASE_EXISTS" | jq -e '.name' >/dev/null 2>&1; then
-              echo "   ✅ $RELEASE_BRANCH exists in $repo"
-            else
-              echo "   ⚠️ $RELEASE_BRANCH branch does NOT exist in $repo, skipping comparison"
-              continue
-            fi
-
-            # Fetch all branches
             BRANCHES=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/$ORG_NAME/$repo/branches?per_page=100" \
               | jq -r '.[].name')
 
+            RELEASE_BRANCHES=$(echo "$BRANCHES" | grep '^release/' || true)
+
+            if [[ -z "$RELEASE_BRANCHES" ]]; then
+              echo "   ⚠️ No release/* branches found in $repo — skipping repo"
+              continue
+            fi
+
+            echo "   📦 Release branches:"
+            echo "$RELEASE_BRANCHES" | sed 's/^/      - /'
+
             for branch in $BRANCHES; do
               [[ "$branch" != feature/* ]] && continue
+
+              echo ""
               echo "➡️  Feature Branch Found: $branch"
 
-              # Check merge status safely
-              COMPARE=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/repos/$ORG_NAME/$repo/compare/$RELEASE_BRANCH...$branch" || echo "{}")
+              MERGED=false
 
-              STATUS=$(echo "$COMPARE" | jq -r '.status // "unknown"')
+              for release in $RELEASE_BRANCHES; do
+                COMPARE=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$ORG_NAME/$repo/compare/$release...$branch" || echo "{}")
 
-              if [[ "$STATUS" == "unknown" ]]; then
-                echo "    ⚠️ Cannot determine merge status (branch may be deleted or repo empty)"
-                continue
-              fi
+                STATUS=$(echo "$COMPARE" | jq -r '.status // "unknown"')
 
-              if [[ "$STATUS" != "identical" ]]; then
-                echo "    ❌ Not merged into $RELEASE_BRANCH (status: $STATUS)"
-              else
-                echo "    ✅ Already merged into $RELEASE_BRANCH"
+                if [[ "$STATUS" == "identical" || "$STATUS" == "behind" ]]; then
+                  echo "    ✅ Merged into $release (status: $STATUS)"
+                  MERGED=true
+                  break
+                else
+                  echo "    ❌ Not merged into $release (status: $STATUS)"
+                fi
+              done
+
+              if [[ "$MERGED" == false ]]; then
+                echo "    🚨 Feature branch is NOT merged into ANY release/* branch!"
+
+                # ===============================
+                # Last Commit Owner Information
+                # ===============================
+
+                SHA=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$ORG_NAME/$repo/branches/$branch" \
+                  | jq -r '.commit.sha')
+
+                COMMIT=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$ORG_NAME/$repo/commits/$SHA")
+
+                OWNER_NAME=$(echo "$COMMIT" | jq -r '.commit.author.name // "Unknown"')
+                OWNER_EMAIL=$(echo "$COMMIT" | jq -r '.commit.author.email // "Not available"')
+                OWNER_LOGIN=$(echo "$COMMIT" | jq -r '.author.login // "Not linked"')
+                COMMIT_DATE=$(echo "$COMMIT" | jq -r '.commit.author.date // "Unknown"')
+                COMMIT_MESSAGE=$(echo "$COMMIT" | jq -r '.commit.message | split("\n")[0]')
+
+                echo "    🔎 Last Commit Details:"
+                echo "       🔑 Commit SHA     : $SHA"
+                echo "       🗓️  Commit Date    : $COMMIT_DATE"
+                echo "       👤 Author Name    : $OWNER_NAME"
+                echo "       📧 Author Email   : $OWNER_EMAIL"
+                echo "       🧑 GitHub Login   : $OWNER_LOGIN"
+                echo "       📝 Commit Message : $COMMIT_MESSAGE"
               fi
             done
           done
