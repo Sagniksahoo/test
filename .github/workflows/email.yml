@@ -1,0 +1,194 @@
+name: Feature Branch Scan (Org-wide, Any Release/*)
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"   # Weekly
+  workflow_dispatch:
+
+jobs:
+  scan-feature-branches:
+    name: Scan feature branches
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y jq swaks
+
+      - name: Scan feature branches in all repos + HTML email with CC
+        env:
+          GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
+          ORG_NAME: your-org-name
+
+          # SMTP Secrets
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: 25                      # Port 25
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          FALLBACK_EMAIL: ${{ secrets.FALLBACK_EMAIL }}
+          CC_EMAILS: ${{ secrets.CC_EMAILS }} # Comma-separated emails to CC
+
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          send_email_html() {
+            local to_email="$1"
+            local subject="$2"
+            local html_body="$3"
+            local cc_emails="$4"
+
+            echo "📧 Sending HTML email to: $to_email, CC: $cc_emails"
+
+            swaks \
+              --to "$to_email" \
+              --cc "$cc_emails" \
+              --from "$SMTP_FROM" \
+              --server "$SMTP_HOST" \
+              --port "$SMTP_PORT" \
+              --auth LOGIN \
+              --auth-user "$SMTP_USER" \
+              --auth-password "$SMTP_PASS" \
+              --header "Subject: $subject" \
+              --header "Content-Type: text/html" \
+              --body "$html_body" \
+              --timeout 30
+          }
+
+          echo "=============================================="
+          echo " GitHub Feature Branch Scan (Org-wide + HTML Email + CC)"
+          echo " Org : $ORG_NAME"
+          echo " Started at : $(date)"
+          echo "=============================================="
+
+          REPOS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100" \
+            | jq -r '.[].name')
+
+          for repo in $REPOS; do
+            echo ""
+            echo "================================================"
+            echo " Repository: $repo"
+            echo "================================================"
+
+            BRANCHES=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$ORG_NAME/$repo/branches?per_page=100" \
+              | jq -r '.[].name')
+
+            RELEASE_BRANCHES=$(echo "$BRANCHES" | grep '^release/' || true)
+
+            if [[ -z "$RELEASE_BRANCHES" ]]; then
+              echo "   ⚠️ No release/* branches found — skipping repo"
+              continue
+            fi
+
+            echo "   📦 Release branches:"
+            echo "$RELEASE_BRANCHES" | sed 's/^/      - /'
+
+            for branch in $BRANCHES; do
+              [[ "$branch" != feature/* ]] && continue
+
+              echo ""
+              echo "➡️  Feature Branch Found: $branch"
+
+              MERGED=false
+
+              for release in $RELEASE_BRANCHES; do
+                COMPARE=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$ORG_NAME/$repo/compare/$release...$branch" || echo "{}")
+
+                STATUS=$(echo "$COMPARE" | jq -r '.status // "unknown"')
+
+                if [[ "$STATUS" == "identical" || "$STATUS" == "behind" ]]; then
+                  echo "    ✅ Merged into $release (status: $STATUS)"
+                  MERGED=true
+                  break
+                else
+                  echo "    ❌ Not merged into $release (status: $STATUS)"
+                fi
+              done
+
+              if [[ "$MERGED" == false ]]; then
+                echo "    🚨 Feature branch is NOT merged into ANY release/* branch!"
+
+                SHA=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$ORG_NAME/$repo/branches/$branch" \
+                  | jq -r '.commit.sha')
+
+                COMMIT=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$ORG_NAME/$repo/commits/$SHA")
+
+                OWNER_NAME=$(echo "$COMMIT" | jq -r '.commit.author.name // "Unknown"')
+                OWNER_EMAIL=$(echo "$COMMIT" | jq -r '.commit.author.email // ""')
+                OWNER_LOGIN=$(echo "$COMMIT" | jq -r '.author.login // "Not linked"')
+                COMMIT_DATE=$(echo "$COMMIT" | jq -r '.commit.author.date // "Unknown"')
+                COMMIT_MESSAGE=$(echo "$COMMIT" | jq -r '.commit.message | split("\n")[0]')
+
+                echo "    🔎 Last Commit Details:"
+                echo "       🔑 Commit SHA     : $SHA"
+                echo "       🗓️  Commit Date    : $COMMIT_DATE"
+                echo "       👤 Author Name    : $OWNER_NAME"
+                echo "       📧 Author Email   : $OWNER_EMAIL"
+                echo "       🧑 GitHub Login   : $OWNER_LOGIN"
+                echo "       📝 Commit Message : $COMMIT_MESSAGE"
+
+                # Bot / missing email fallback
+                if [[ -z "$OWNER_EMAIL" || "$OWNER_LOGIN" =~ (bot|actions|pipeline|dependabot) ]]; then
+                  TO_EMAIL="$FALLBACK_EMAIL"
+                else
+                  TO_EMAIL="$OWNER_EMAIL"
+                fi
+
+                COMPARE_URL="https://github.com/$ORG_NAME/$repo/compare/$branch"
+
+                SUBJECT="[ACTION REQUIRED] Stale Feature Branch: $repo / $branch"
+
+                # HTML BODY
+                HTML_BODY=$(cat <<EOF
+               <html>
+                 <body style="font-family: Arial, sans-serif; line-height: 1.4;">
+                   <h2 style="color:#d9534f;">🚨 Feature Branch NOT Merged</h2>
+                   <p>Hello <strong>$OWNER_NAME</strong>,</p>
+                   <p>The following feature branch is <strong>NOT merged</strong> into any release/* branch:</p>
+               
+                   <table style="border-collapse: collapse; width: 100%;">
+                     <tr style="background-color: #f2f2f2;">
+                       <th style="border: 1px solid #ddd; padding: 8px;">Repository</th>
+                       <th style="border: 1px solid #ddd; padding: 8px;">Feature Branch</th>
+                       <th style="border: 1px solid #ddd; padding: 8px;">Release Branches</th>
+                     </tr>
+                     <tr>
+                       <td style="border: 1px solid #ddd; padding: 8px;">$repo</td>
+                       <td style="border: 1px solid #ddd; padding: 8px;">$branch</td>
+                       <td style="border: 1px solid #ddd; padding: 8px;">$(echo "$RELEASE_BRANCHES" | tr '\n' ', ')</td>
+                     </tr>
+                   </table>
+               
+                   <h3>Last Commit Info</h3>
+                   <ul>
+                     <li><strong>Date:</strong> $COMMIT_DATE</li>
+                     <li><strong>Author:</strong> $OWNER_NAME ($OWNER_LOGIN)</li>
+                     <li><strong>Message:</strong> $COMMIT_MESSAGE</li>
+                     <li><strong>SHA:</strong> $SHA</li>
+                   </ul>
+               
+                   <p>Compare Branch: <a href="$COMPARE_URL">$COMPARE_URL</a></p>
+               
+                   <p>Please merge this branch into an appropriate release/* branch or delete it if no longer required.</p>
+               
+                   <p>Thanks,<br/>DevOps Automation</p>
+                 </body>
+               </html>
+               EOF
+               )
+
+                send_email_html "$TO_EMAIL" "$SUBJECT" "$HTML_BODY" "$CC_EMAILS"
+              fi
+            done
+          done
+
+          echo ""
+          echo "=============================================="
+          echo " Feature Branch Scan Completed"
+          echo " Finished at : $(date)"
+          echo "=============================================="
