@@ -32,7 +32,7 @@ jobs:
 
           # Fetch repositories
           echo "Fetching repositories from organization..."
-          REPOS=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+          REPOS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100" \
             | jq -r '.[].name')
 
@@ -42,17 +42,19 @@ jobs:
             echo " Repository: $repo"
             echo "------------------------------------------------"
 
-            # Check if release branch exists
-            RELEASE_EXISTS=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$ORG_NAME/$repo/branches/$RELEASE_BRANCH" || echo "{}")
+            # Check if release branch exists safely (no -f)
+            RELEASE_EXISTS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$ORG_NAME/$repo/branches/$RELEASE_BRANCH")
 
-            if [[ "$RELEASE_EXISTS" == "{}" ]]; then
-              echo "   ⚠️ $RELEASE_BRANCH branch does not exist in $repo, skipping comparison"
+            if echo "$RELEASE_EXISTS" | jq -e '.name' >/dev/null 2>&1; then
+              echo "   ✅ $RELEASE_BRANCH exists in $repo"
+            else
+              echo "   ⚠️ $RELEASE_BRANCH branch does NOT exist in $repo, skipping comparison"
               continue
             fi
 
-            # Fetch branches
-            BRANCHES=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            # Fetch all branches
+            BRANCHES=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/$ORG_NAME/$repo/branches?per_page=100" \
               | jq -r '.[].name')
 
@@ -61,13 +63,13 @@ jobs:
               echo "➡️  Feature Branch Found: $branch"
 
               # Check merge status safely
-              COMPARE=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+              COMPARE=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$ORG_NAME/$repo/compare/$RELEASE_BRANCH...$branch" || echo "{}")
 
               STATUS=$(echo "$COMPARE" | jq -r '.status // "unknown"')
 
               if [[ "$STATUS" == "unknown" ]]; then
-                echo "    ⚠️ Cannot determine merge status (maybe branch deleted or empty repo)"
+                echo "    ⚠️ Cannot determine merge status (branch may be deleted or repo empty)"
                 continue
               fi
 
