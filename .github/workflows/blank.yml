@@ -2,8 +2,9 @@ name: Run Every Minute
 
 on:
   schedule:
-    - cron: "* * * * *"  # Runs at the start of every minute
-  workflow_dispatch:     # Optional: allows manual trigger
+    - cron: "5 12 * * 1-5"  # Monday to Friday at 5:35 PM IST
+  workflow_dispatch:        # Optional manual trigger
+
 
 jobs:
   run-every-minute:
