@@ -17,7 +17,7 @@ jobs:
       - name: Scan feature branches in all repos + HTML email with CC
         env:
           GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
-          ORG_NAME: TechExplorers2025
+          ORG_NAME: your-org-name
 
           # SMTP Secrets
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -124,14 +124,6 @@ jobs:
                 COMMIT_DATE=$(echo "$COMMIT" | jq -r '.commit.author.date // "Unknown"')
                 COMMIT_MESSAGE=$(echo "$COMMIT" | jq -r '.commit.message | split("\n")[0]')
 
-                echo "    🔎 Last Commit Details:"
-                echo "       🔑 Commit SHA     : $SHA"
-                echo "       🗓️  Commit Date    : $COMMIT_DATE"
-                echo "       👤 Author Name    : $OWNER_NAME"
-                echo "       📧 Author Email   : $OWNER_EMAIL"
-                echo "       🧑 GitHub Login   : $OWNER_LOGIN"
-                echo "       📝 Commit Message : $COMMIT_MESSAGE"
-
                 # Bot / missing email fallback
                 if [[ -z "$OWNER_EMAIL" || "$OWNER_LOGIN" =~ (bot|actions|pipeline|dependabot) ]]; then
                   TO_EMAIL="$FALLBACK_EMAIL"
@@ -140,48 +132,47 @@ jobs:
                 fi
 
                 COMPARE_URL="https://github.com/$ORG_NAME/$repo/compare/$branch"
-
                 SUBJECT="[ACTION REQUIRED] Stale Feature Branch: $repo / $branch"
 
-                # HTML BODY
-                HTML_BODY=$(cat <<EOF
-<html>
-  <body style="font-family: Arial, sans-serif; line-height: 1.4;">
-    <h2 style="color:#d9534f;">🚨 Feature Branch NOT Merged</h2>
-    <p>Hello <strong>$OWNER_NAME</strong>,</p>
-    <p>The following feature branch is <strong>NOT merged</strong> into any release/* branch:</p>
-
-    <table style="border-collapse: collapse; width: 100%;">
-      <tr style="background-color: #f2f2f2;">
-        <th style="border: 1px solid #ddd; padding: 8px;">Repository</th>
-        <th style="border: 1px solid #ddd; padding: 8px;">Feature Branch</th>
-        <th style="border: 1px solid #ddd; padding: 8px;">Release Branches</th>
-      </tr>
-      <tr>
-        <td style="border: 1px solid #ddd; padding: 8px;">$repo</td>
-        <td style="border: 1px solid #ddd; padding: 8px;">$branch</td>
-        <td style="border: 1px solid #ddd; padding: 8px;">$(echo "$RELEASE_BRANCHES" | tr '\n' ', ')</td>
-      </tr>
-    </table>
-
-    <h3>Last Commit Info</h3>
-    <ul>
-      <li><strong>Date:</strong> $COMMIT_DATE</li>
-      <li><strong>Author:</strong> $OWNER_NAME ($OWNER_LOGIN)</li>
-      <li><strong>Message:</strong> $COMMIT_MESSAGE</li>
-      <li><strong>SHA:</strong> $SHA</li>
-    </ul>
-
-    <p>Compare Branch: <a href="$COMPARE_URL">$COMPARE_URL</a></p>
-
-    <p>Please merge this branch into an appropriate release/* branch or delete it if no longer required.</p>
-
-    <p>Thanks,<br/>DevOps Automation</p>
-  </body>
-</html>
-EOF
-)
-
+                # ===============================
+                # HTML BODY using read -r -d ''
+                # ===============================
+                read -r -d '' HTML_BODY << EOM
+                <html>
+                  <body style="font-family: Arial, sans-serif; line-height: 1.4;">
+                    <h2 style="color:#d9534f;">🚨 Feature Branch NOT Merged</h2>
+                    <p>Hello <strong>$OWNER_NAME</strong>,</p>
+                    <p>The following feature branch is <strong>NOT merged</strong> into any release/* branch:</p>
+                
+                    <table style="border-collapse: collapse; width: 100%;">
+                      <tr style="background-color: #f2f2f2;">
+                        <th style="border: 1px solid #ddd; padding: 8px;">Repository</th>
+                        <th style="border: 1px solid #ddd; padding: 8px;">Feature Branch</th>
+                        <th style="border: 1px solid #ddd; padding: 8px;">Release Branches</th>
+                      </tr>
+                      <tr>
+                        <td style="border: 1px solid #ddd; padding: 8px;">$repo</td>
+                        <td style="border: 1px solid #ddd; padding: 8px;">$branch</td>
+                        <td style="border: 1px solid #ddd; padding: 8px;">$(echo "$RELEASE_BRANCHES" | tr '\n' ', ')</td>
+                      </tr>
+                    </table>
+                
+                    <h3>Last Commit Info</h3>
+                    <ul>
+                      <li><strong>Date:</strong> $COMMIT_DATE</li>
+                      <li><strong>Author:</strong> $OWNER_NAME ($OWNER_LOGIN)</li>
+                      <li><strong>Message:</strong> $COMMIT_MESSAGE</li>
+                      <li><strong>SHA:</strong> $SHA</li>
+                    </ul>
+                
+                    <p>Compare Branch: <a href="$COMPARE_URL">$COMPARE_URL</a></p>
+                
+                    <p>Please merge this branch into an appropriate release/* branch or delete it if no longer required.</p>
+                
+                    <p>Thanks,<br/>DevOps Automation</p>
+                  </body>
+                </html>
+                EOM
 
                 send_email_html "$TO_EMAIL" "$SUBJECT" "$HTML_BODY" "$CC_EMAILS"
               fi
