@@ -1,4 +1,4 @@
-name: Feature Branch Scan (with Owner Info)
+name: Feature Branch Scan
 
 on:
   schedule:
@@ -24,12 +24,13 @@ jobs:
           set -euo pipefail
 
           echo "=============================================="
-          echo " GitHub Feature Branch Scan (With Owner Info)"
+          echo " GitHub Feature Branch Scan"
           echo " Org           : $ORG_NAME"
           echo " Release Branch: $RELEASE_BRANCH"
           echo " Started at    : $(date)"
           echo "=============================================="
 
+          # Fetch repositories
           echo "Fetching repositories from organization..."
           REPOS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100" \
@@ -41,6 +42,7 @@ jobs:
             echo " Repository: $repo"
             echo "------------------------------------------------"
 
+            # Check if release branch exists safely (no -f)
             RELEASE_EXISTS=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/$ORG_NAME/$repo/branches/$RELEASE_BRANCH")
 
@@ -51,57 +53,31 @@ jobs:
               continue
             fi
 
+            # Fetch all branches
             BRANCHES=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/$ORG_NAME/$repo/branches?per_page=100" \
               | jq -r '.[].name')
 
             for branch in $BRANCHES; do
               [[ "$branch" != feature/* ]] && continue
-              echo ""
               echo "➡️  Feature Branch Found: $branch"
 
+              # Check merge status safely
               COMPARE=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$ORG_NAME/$repo/compare/$RELEASE_BRANCH...$branch" || echo "{}")
 
               STATUS=$(echo "$COMPARE" | jq -r '.status // "unknown"')
 
               if [[ "$STATUS" == "unknown" ]]; then
-                echo "    ⚠️ Cannot determine merge status"
+                echo "    ⚠️ Cannot determine merge status (branch may be deleted or repo empty)"
                 continue
               fi
 
-              if [[ "$STATUS" == "identical" ]]; then
+              if [[ "$STATUS" != "identical" ]]; then
+                echo "    ❌ Not merged into $RELEASE_BRANCH (status: $STATUS)"
+              else
                 echo "    ✅ Already merged into $RELEASE_BRANCH"
-                continue
               fi
-
-              echo "    ❌ Not merged into $RELEASE_BRANCH (status: $STATUS)"
-
-              # ===============================
-              # Last Commit Owner Information
-              # ===============================
-
-              SHA=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/repos/$ORG_NAME/$repo/branches/$branch" \
-                | jq -r '.commit.sha')
-
-              COMMIT=$(curl -sSL -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/repos/$ORG_NAME/$repo/commits/$SHA")
-
-              OWNER_NAME=$(echo "$COMMIT" | jq -r '.commit.author.name // "Unknown"')
-              OWNER_EMAIL=$(echo "$COMMIT" | jq -r '.commit.author.email // "Not available"')
-              OWNER_LOGIN=$(echo "$COMMIT" | jq -r '.author.login // "Not linked"')
-              COMMIT_DATE=$(echo "$COMMIT" | jq -r '.commit.author.date // "Unknown"')
-              COMMIT_MESSAGE=$(echo "$COMMIT" | jq -r '.commit.message | split("\n")[0]')
-
-              echo "    🔎 Last Commit Details:"
-              echo "       🔑 Commit SHA     : $SHA"
-              echo "       🗓️  Commit Date    : $COMMIT_DATE"
-              echo "       👤 Author Name    : $OWNER_NAME"
-              echo "       📧 Author Email   : $OWNER_EMAIL"
-              echo "       🧑 GitHub Login   : $OWNER_LOGIN"
-              echo "       📝 Commit Message : $COMMIT_MESSAGE"
-
             done
           done
 
