@@ -1,19 +1,148 @@
-name: Run Every Minute
+name: Feature Branch Owner Notification
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"   # Weekly (08:30 AM IST)
   workflow_dispatch:
 
-
 jobs:
-  run-every-minute:
+  notify-owners:
+    name: Notify feature branch owners (not merged to release)
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v3
 
-      - name: Run Script
+    steps:
+      - name: Install required tools
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Scan feature branches and notify owners
+        env:
+          GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
+          ORG_NAME: TechExplorers2025
+          RELEASE_BRANCH: release
+
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: 587
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+        shell: bash
         run: |
-          echo "This runs every minute"
-          # Place your script here
+          set -euo pipefail
+
+          echo "=============================================="
+          echo " GitHub Feature Branch Governance Automation"
+          echo " Org           : $ORG_NAME"
+          echo " Release Branch: $RELEASE_BRANCH"
+          echo " Started at    : $(date)"
+          echo "=============================================="
+
+          # Fetch repositories
+          echo "Fetching repositories from organization..."
+          REPOS=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100" \
+            | jq -r '.[].name')
+
+          for repo in $REPOS; do
+            echo ""
+            echo "------------------------------------------------"
+            echo " Repository: $repo"
+            echo "------------------------------------------------"
+
+            # Fetch branches
+            BRANCHES=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$ORG_NAME/$repo/branches?per_page=100" \
+              | jq -r '.[].name')
+
+            for branch in $BRANCHES; do
+              [[ "$branch" != feature/* ]] && continue
+
+              echo "➡️  Checking feature branch: $branch"
+
+              # Compare with release branch
+              COMPARE=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$ORG_NAME/$repo/compare/$RELEASE_BRANCH...$branch")
+
+              STATUS=$(echo "$COMPARE" | jq -r '.status // empty')
+
+              if [[ "$STATUS" == "identical" ]]; then
+                echo "   ✅ Already merged to $RELEASE_BRANCH"
+                continue
+              fi
+
+              echo "   ❌ NOT merged to $RELEASE_BRANCH (status: $STATUS)"
+
+              # Get latest commit SHA for the branch
+              SHA=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$ORG_NAME/$repo/branches/$branch" \
+                | jq -r '.commit.sha')
+
+              # Get commit details
+              COMMIT=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$ORG_NAME/$repo/commits/$SHA")
+
+              OWNER_NAME=$(echo "$COMMIT" | jq -r '.commit.author.name // "Developer"')
+              OWNER_EMAIL=$(echo "$COMMIT" | jq -r '.commit.author.email // empty')
+              OWNER_LOGIN=$(echo "$COMMIT" | jq -r '.author.login // empty')
+
+              # Handle GitHub noreply and missing emails
+              if [[ -z "$OWNER_EMAIL" || "$OWNER_EMAIL" == "null" || "$OWNER_EMAIL" == *"noreply.github.com"* ]]; then
+                if [[ -n "$OWNER_LOGIN" ]]; then
+                  OWNER_EMAIL="${OWNER_LOGIN}@yourcompany.com"
+                else
+                  echo "   ⚠️ Unable to determine owner email. Skipping notification."
+                  continue
+                fi
+              fi
+
+              echo "   👤 Owner       : $OWNER_NAME"
+              echo "   📧 Owner Email : $OWNER_EMAIL"
+
+              SUBJECT="ACTION REQUIRED: Feature branch not merged [$repo : $branch]"
+
+              BODY=$(cat <<EOF
+              Hello $OWNER_NAME,
+              
+              Our automated governance checks detected that your feature branch has not been merged into the '$RELEASE_BRANCH' branch.
+              
+              Details:
+              --------------------------------------------------
+              Repository      : $repo
+              Feature Branch  : $branch
+              Release Branch  : $RELEASE_BRANCH
+              Current Status  : NOT MERGED
+              --------------------------------------------------
+              
+              Please take one of the following actions at the earliest:
+              
+              1. Merge this feature branch into '$RELEASE_BRANCH'
+              2. Delete the branch if it is no longer required
+              
+              If you believe this notification is incorrect, please contact the DevOps team.
+              
+              This is an automated message generated by the DevOps Governance system.
+              
+              Thanks & Regards,
+              DevOps Automation Bot
+              EOF
+              )
+
+              echo "   📤 Sending notification email..."
+
+              curl --fail --silent --show-error \
+                --url "smtp://${SMTP_SERVER}:${SMTP_PORT}" \
+                --ssl-reqd \
+                --mail-from "$EMAIL_FROM" \
+                --mail-rcpt "$OWNER_EMAIL" \
+                --user "${SMTP_USERNAME}:${SMTP_PASSWORD}" \
+                -T <(echo -e "Subject: $SUBJECT\nFrom: $EMAIL_FROM\nTo: $OWNER_EMAIL\n\n$BODY")
+
+              echo "   ✅ Email sent successfully"
+
+            done
+          done
+
+          echo ""
+          echo "=============================================="
+          echo " Feature Branch Owner Notification Completed"
+          echo " Finished at : $(date)"
+          echo "=============================================="
